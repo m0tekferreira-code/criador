@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   UploadCloud, FileText, Image as ImageIcon, Wand2,
   CheckCircle2, Palette, PenTool, Layout, Download,
-  AlertCircle, Loader2, ChevronRight, RefreshCw, X, ImagePlus, Key, Cpu, Info, ExternalLink, BookOpen, Save, Trash2, FolderOpen, LogOut, User
+  AlertCircle, Loader2, ChevronRight, RefreshCw, X, ImagePlus, Key, Cpu, Info, ExternalLink, BookOpen, Trash2, FolderOpen, LogOut, User
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { useAuth } from './contexts/AuthContext';
@@ -78,7 +78,7 @@ export default function App() {
   const [designConcepts, setDesignConcepts] = useState<string[]>([]);
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
   const [savedBrands, setSavedBrands] = useState<SavedBrand[]>([]);
-  const [brandsLoading, setBrandsLoading] = useState(true);
+  const [, setBrandsLoading] = useState(true);
   const mdInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
