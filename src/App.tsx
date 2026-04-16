@@ -183,8 +183,8 @@ ENTREGAVEIS:
 2. **colors** -- Paleta de 3 a 5 cores em formato HEX.
    Baseie-se nas cores do manual, da logo e das referencias visuais.
 
-3. **design_concepts** -- Um ARRAY de exatamente ${numCreatives} conceitos de design DISTINTOS em INGLES.
-   CADA conceito sera usado como prompt para gerar um CRIATIVO PUBLICITARIO COMPLETO (imagem final com texto).
+3. **design_concepts** -- Um ARRAY de exatamente ${numCreatives} conceitos de design DISTINTOS em PORTUGUES (pt-BR).
+   CADA conceito sera usado como prompt para gerar um CRIATIVO PUBLICITARIO COMPLETO (imagem final com texto em Portugues).
    
    CADA conceito DEVE ser COMPLETAMENTE DIFERENTE dos outros em:
    - Layout e composicao (centrado, assimetrico, diagonal, grid, split-screen, full-bleed, etc.)
@@ -192,7 +192,7 @@ ENTREGAVEIS:
    - Estilo visual (fotografico, flat design, gradiente, texturizado, colagem, neon, etc.)
    - Posicionamento do texto e da logo (topo, centro, inferior, lateral, overlay, etc.)
    
-   Para cada conceito, descreva DETALHADAMENTE:
+   Para cada conceito, descreva DETALHADAMENTE em PORTUGUES:
    - Composicao completa do background e elementos visuais
    - Atmosfera, iluminacao e texturas
    - ONDE e COMO o texto da copy deve aparecer (posicao, tamanho relativo, estilo tipografico: bold, light, serif, sans-serif, etc.)
@@ -204,6 +204,7 @@ ENTREGAVEIS:
 IMPORTANTE:
 - Cada conceito DEVE resultar em um criativo VISUALMENTE UNICO e diferente dos demais.
 - O texto da copy SERA parte da imagem gerada -- descreva como ele deve ser integrado visualmente.
+- TODO texto visivel no criativo final DEVE estar em Portugues do Brasil (pt-BR). NUNCA use ingles.
 - Responda APENAS com JSON valido.
 `.trim();
 
@@ -231,7 +232,7 @@ IMPORTANTE:
             properties: {
               brand_analysis: { type: "STRING", description: "Analise profunda da marca em Portugues" },
               colors: { type: "ARRAY", items: { type: "STRING" }, description: "Array de 3 a 5 codigos HEX" },
-              design_concepts: { type: "ARRAY", items: { type: "STRING" }, description: `Array de exatamente ${numCreatives} conceitos de design DISTINTOS em INGLES para criativo completo com texto.` }
+              design_concepts: { type: "ARRAY", items: { type: "STRING" }, description: `Array de exatamente ${numCreatives} conceitos de design DISTINTOS em PORTUGUES (pt-BR) para criativo completo com texto.` }
             },
             required: ["brand_analysis", "colors", "design_concepts"]
           }
@@ -335,25 +336,26 @@ Responda APENAS com JSON valido.
         const conceptForThisVariation = designConcepts[index] || designConcepts[0] || "Premium advertising composition";
 
         const finalPrompt = [
-          `Create a COMPLETE, FINAL advertising creative ready for publication. This is creative variation ${index + 1} of ${numCreatives}.`,
-          `Aspect ratio: ${aspectRatio}. Format: ${selectedSize}.`,
+          `Crie um CRIATIVO PUBLICITARIO COMPLETO e FINAL, pronto para publicacao. Esta e a variacao ${index + 1} de ${numCreatives}.`,
+          `Proporcao: ${aspectRatio}. Formato: ${selectedSize}.`,
           "",
-          "=== VISUAL CONCEPT FOR THIS SPECIFIC VARIATION ===",
+          "=== CONCEITO VISUAL PARA ESTA VARIACAO ===",
           conceptForThisVariation,
           "",
-          "=== MANDATORY TEXT TO RENDER ON THE IMAGE ===",
-          `The following copy text MUST appear legibly and beautifully typeset on the image, integrated into the design:`,
+          "=== TEXTO OBRIGATORIO PARA RENDERIZAR NA IMAGEM ===",
+          `O seguinte texto DEVE aparecer de forma legivel e com tipografia bonita na imagem, integrado ao design:`,
           `"${copyText}"`,
           "",
-          "=== COLOR PALETTE (must dominate the design) ===",
+          "=== PALETA DE CORES (deve dominar o design) ===",
           palette.join(', '),
           "",
-          "=== CRITICAL REQUIREMENTS ===",
-          "1. The copy text above MUST be rendered clearly and legibly as part of the image composition.",
-          "2. The typography must be professional, readable, and visually integrated with the overall design.",
-          "3. Text should have proper contrast against the background -- use text shadows, overlays, or solid areas if needed.",
-          "4. This is a FINAL advertising creative -- it must look polished, professional, and ready to publish.",
-          "5. Follow the visual concept direction precisely for layout, mood, and typography style.",
+          "=== REQUISITOS CRITICOS ===",
+          "1. O texto da copy acima DEVE ser renderizado de forma clara e legivel como parte da composicao da imagem.",
+          "2. A tipografia deve ser profissional, legivel e visualmente integrada ao design geral.",
+          "3. O texto deve ter contraste adequado com o fundo -- use sombras, overlays ou areas solidas se necessario.",
+          "4. Este e um CRIATIVO PUBLICITARIO FINAL -- deve parecer polido, profissional e pronto para publicar.",
+          "5. Siga a direcao do conceito visual com precisao para layout, mood e estilo tipografico.",
+          "6. TODO texto visivel na imagem DEVE estar em Portugues do Brasil (pt-BR). NAO use ingles em nenhum elemento de texto.",
         ].join("\n");
 
         let base64Image = "";
@@ -373,12 +375,12 @@ Responda APENAS com JSON valido.
           const contentParts: any[] = [{ text: finalPrompt }];
 
           if (logo) {
-            contentParts.push({ text: "Place the following logo in the creative, integrated into the design as directed by the visual concept:" });
+            contentParts.push({ text: "Posicione a seguinte logo no criativo, integrada ao design conforme o conceito visual:" });
             contentParts.push({ inlineData: { mimeType: "image/png", data: logo.split(',')[1] } });
           }
 
           if (referenceImages.length > 0) {
-            contentParts.push({ text: "Use the following reference images as style and visual guidance:" });
+            contentParts.push({ text: "Use as seguintes imagens de referencia como guia de estilo e direcao visual:" });
             referenceImages.forEach((img) => {
               contentParts.push({ inlineData: { mimeType: img.mimeType, data: img.base64.split(',')[1] } });
             });
