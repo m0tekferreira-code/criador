@@ -2,8 +2,10 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   UploadCloud, FileText, Image as ImageIcon, Wand2,
   CheckCircle2, Palette, PenTool, Layout, Download,
-  AlertCircle, Loader2, ChevronRight, RefreshCw, X, ImagePlus, Key, Cpu, Info, ExternalLink, BookOpen
+  AlertCircle, Loader2, ChevronRight, RefreshCw, X, ImagePlus, Key, Cpu, Info, ExternalLink, BookOpen, Save, Trash2, FolderOpen, LogOut, User
 } from 'lucide-react';
+import { supabase } from './lib/supabase';
+import { useAuth } from './contexts/AuthContext';
 
 const apiKey = "";
 
@@ -27,6 +29,17 @@ const fetchWithRetry = async (url: string, options: RequestInit, maxRetries = 5)
 interface ModelOption { id: string; label: string; }
 interface ReferenceImage { base64: string; mimeType: string; }
 
+interface SavedBrand {
+  id: string;
+  name: string;
+  savedAt: string;
+  brandAnalysis: string;
+  palette: string[];
+  logo: string | null;
+  referenceImages: ReferenceImage[];
+  mdContent: string;
+}
+
 const SIZE_TO_ASPECT: Record<string, string> = {
   "1080x1080": "1:1",
   "1080x1920": "9:16",
@@ -34,6 +47,7 @@ const SIZE_TO_ASPECT: Record<string, string> = {
 };
 
 export default function App() {
+  const { user, signOut } = useAuth();
   const [step, setStep] = useState(1);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +77,8 @@ export default function App() {
   const [copyRationale, setCopyRationale] = useState("");
   const [designConcepts, setDesignConcepts] = useState<string[]>([]);
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
+  const [savedBrands, setSavedBrands] = useState<SavedBrand[]>([]);
+  const [brandsLoading, setBrandsLoading] = useState(true);
   const mdInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -155,6 +171,33 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [customApiKey, fetchModelsFromApi]);
 
+  // Load saved brands from Supabase
+  useEffect(() => {
+    if (!user) return;
+    const loadBrands = async () => {
+      setBrandsLoading(true);
+      const { data } = await supabase
+        .from('brands')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+      if (data) {
+        setSavedBrands(data.map(b => ({
+          id: b.id,
+          name: b.name,
+          savedAt: new Date(b.created_at).toLocaleDateString('pt-BR'),
+          brandAnalysis: b.brand_analysis,
+          palette: b.palette || [],
+          logo: null,
+          referenceImages: [],
+          mdContent: b.md_content,
+        })));
+      }
+      setBrandsLoading(false);
+    };
+    loadBrands();
+  }, [user]);
+
   // ========================================================================
   // AGENT 1 -- Diretor de Criacao (Analista de Marca + Direcao de Arte)
   // Produz: paleta, analise da marca, N conceitos de design DISTINTOS.
@@ -190,7 +233,7 @@ ENTREGAVEIS:
    - Layout e composicao (centrado, assimetrico, diagonal, grid, split-screen, full-bleed, etc.)
    - Atmosfera e mood (vibrante, elegante, minimalista, ousado, dramatico, clean, etc.)
    - Estilo visual (fotografico, flat design, gradiente, texturizado, colagem, neon, etc.)
-   - Posicionamento do texto e da logo (topo, centro, inferior, lateral, overlay, etc.)
+   - Posicionamento do texto e da logo (topo, centro, NUNCA na parte inferior)
    
    Para cada conceito, descreva DETALHADAMENTE em PORTUGUES:
    - Composicao completa do background e elementos visuais
@@ -200,6 +243,13 @@ ENTREGAVEIS:
    - O estilo tipografico que combine com o mood do conceito
    - Baseie-se no estilo visual das imagens de referencia, mas VARIE a interpretacao entre conceitos
    - O formato final e ${selectedSize} (aspect ratio ${SIZE_TO_ASPECT[selectedSize]})
+
+REGRA CRITICA -- ZONA INFERIOR LIMPA (INSTAGRAM ADS):
+- Os criativos serao usados como anuncios no Instagram.
+- A parte INFERIOR da imagem (ultimos 15-20% da altura) DEVE ficar COMPLETAMENTE LIMPA -- sem texto, sem logo, sem elementos importantes.
+- Essa area sera ocupada pelo botao de CTA do Instagram (ex: "Saiba Mais", "Comprar Agora").
+- Posicione TODO texto e logo na metade SUPERIOR ou no CENTRO da imagem.
+- O fundo na area inferior pode ter cor, gradiente ou imagem, mas NADA que seja cortado ou sobreposto pelo botao.
 
 IMPORTANTE:
 - Cada conceito DEVE resultar em um criativo VISUALMENTE UNICO e diferente dos demais.
@@ -244,11 +294,39 @@ IMPORTANTE:
       if (!responseText) throw new Error("Resposta invalida da IA analitica.");
       const data = JSON.parse(responseText);
 
-      setPalette(data.colors || []);
-      setBrandAnalysis(data.brand_analysis || "");
+      const newPalette = data.colors || [];
+      const newAnalysis = data.brand_analysis || "";
+      setPalette(newPalette);
+      setBrandAnalysis(newAnalysis);
       setDesignConcepts(data.design_concepts || []);
 
-      await generateCopy(data.brand_analysis, data.colors);
+      // Save brand to Supabase
+      const brandName = (mdFile?.name || "Marca").replace(/\.(md|txt)$/i, "");
+      if (user) {
+        const { data: inserted } = await supabase.from('brands').insert({
+          user_id: user.id,
+          name: brandName,
+          brand_analysis: newAnalysis,
+          palette: newPalette,
+          md_content: mdContent,
+        }).select().single();
+
+        if (inserted) {
+          const newBrand: SavedBrand = {
+            id: inserted.id,
+            name: brandName,
+            savedAt: new Date().toLocaleDateString('pt-BR'),
+            brandAnalysis: newAnalysis,
+            palette: newPalette,
+            logo,
+            referenceImages,
+            mdContent,
+          };
+          setSavedBrands(prev => [newBrand, ...prev.filter(b => b.name !== brandName)]);
+        }
+      }
+
+      await generateCopy(newAnalysis, newPalette);
 
     } catch (err: any) {
       console.error(err); setError("Erro no Agente Analitico. " + err.message); setStep(1);
@@ -356,6 +434,11 @@ Responda APENAS com JSON valido.
           "4. Este e um CRIATIVO PUBLICITARIO FINAL -- deve parecer polido, profissional e pronto para publicar.",
           "5. Siga a direcao do conceito visual com precisao para layout, mood e estilo tipografico.",
           "6. TODO texto visivel na imagem DEVE estar em Portugues do Brasil (pt-BR). NAO use ingles em nenhum elemento de texto.",
+          "",
+          "=== REGRA CRITICA: ZONA INFERIOR LIMPA (INSTAGRAM ADS) ===",
+          "7. A parte INFERIOR da imagem (ultimos 15-20% da altura) DEVE ficar COMPLETAMENTE LIMPA e VAZIA -- sem texto, sem logo, sem elementos graficos importantes.",
+          "8. Essa area sera ocupada pelo botao de CTA do Instagram (Saiba Mais, Comprar Agora, etc). Qualquer conteudo ali sera COBERTO.",
+          "9. Posicione TODA a copy, logo e elementos visuais importantes na metade SUPERIOR ou no CENTRO da imagem. NUNCA na parte inferior.",
         ].join("\n");
 
         let base64Image = "";
@@ -400,7 +483,34 @@ Responda APENAS com JSON valido.
       });
 
       const images = await Promise.all(promises);
-      setGeneratedImages(images); setStep(5);
+      setGeneratedImages(images);
+
+      // Save creatives to Supabase Storage
+      if (user) {
+        for (let i = 0; i < images.length; i++) {
+          const base64Data = images[i].split(',')[1];
+          const byteString = atob(base64Data);
+          const ab = new ArrayBuffer(byteString.length);
+          const ia = new Uint8Array(ab);
+          for (let j = 0; j < byteString.length; j++) ia[j] = byteString.charCodeAt(j);
+          const blob = new Blob([ab], { type: 'image/png' });
+          const filePath = `${user.id}/${Date.now()}-var${i + 1}.png`;
+
+          const { data: uploaded } = await supabase.storage.from('creatives').upload(filePath, blob, { contentType: 'image/png' });
+          if (uploaded) {
+            await supabase.from('creatives').insert({
+              user_id: user.id,
+              brand_id: savedBrands[0]?.id || null,
+              size: selectedSize,
+              copy_text: copyText,
+              design_concept: designConcepts[i] || designConcepts[0] || '',
+              image_path: uploaded.path,
+            });
+          }
+        }
+      }
+
+      setStep(5);
     } catch (err: any) {
       console.error(err); setError("Erro ao gerar criativo. " + err.message); setStep(3);
     }
@@ -410,8 +520,132 @@ Responda APENAS com JSON valido.
   // RENDERIZACAO
   // ========================================================================
 
+  const loadBrand = (brand: SavedBrand) => {
+    setBrandAnalysis(brand.brandAnalysis);
+    setPalette(brand.palette);
+    setLogo(brand.logo);
+    setReferenceImages(brand.referenceImages);
+    setMdContent(brand.mdContent);
+    setMdFile(new File([brand.mdContent], brand.name + ".md", { type: "text/markdown" }));
+  };
+
+  const deleteBrand = async (id: string) => {
+    if (user) {
+      await supabase.from('brands').delete().eq('id', id).eq('user_id', user.id);
+    }
+    const updated = savedBrands.filter(b => b.id !== id);
+    setSavedBrands(updated);
+  };
+
+  const useSavedBrand = async (brand: SavedBrand) => {
+    loadBrand(brand);
+    setStep(2);
+    setLoadingMsg("Carregando marca salva e gerando nova copy...");
+    setError(null);
+    try {
+      setDesignConcepts([]);
+      // Re-run Agent 1 for fresh concepts but skip the brand analysis
+      const activeKey = customApiKey || apiKey;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${activeKey}`;
+      const systemPrompt = `
+Voce e um Diretor de Criacao Senior. Ja temos a analise de marca pronta abaixo.
+Sua UNICA tarefa e gerar ${numCreatives} conceitos de design DISTINTOS em PORTUGUES (pt-BR).
+
+ANALISE DA MARCA:
+${brand.brandAnalysis}
+
+PALETA: ${brand.palette.join(", ")}
+FORMATO: ${selectedSize} (${SIZE_TO_ASPECT[selectedSize]})
+
+CADA conceito DEVE ser COMPLETAMENTE DIFERENTE dos outros em:
+- Layout e composicao
+- Atmosfera e mood
+- Estilo visual
+- Posicionamento do texto e da logo (NUNCA na parte inferior)
+
+Descreva DETALHADAMENTE em PORTUGUES:
+- Composicao completa do background e elementos visuais
+- Atmosfera, iluminacao e texturas
+- ONDE e COMO o texto da copy deve aparecer
+- ONDE a logo deve ser posicionada
+- O estilo tipografico que combine com o mood
+- O formato final e ${selectedSize} (aspect ratio ${SIZE_TO_ASPECT[selectedSize]})
+
+REGRA CRITICA -- ZONA INFERIOR LIMPA (INSTAGRAM ADS):
+- A parte INFERIOR da imagem (ultimos 15-20% da altura) DEVE ficar COMPLETAMENTE LIMPA.
+- Essa area sera ocupada pelo botao de CTA do Instagram (ex: "Saiba Mais").
+- Posicione TODO texto e logo na metade SUPERIOR ou no CENTRO da imagem.
+
+TODO texto visivel no criativo final DEVE estar em Portugues do Brasil (pt-BR). NUNCA use ingles.
+Responda APENAS com JSON valido.
+`.trim();
+
+      const payload = {
+        contents: [{ role: "user", parts: [{ text: `Gere ${numCreatives} conceitos de design distintos para esta marca.` }] }],
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              design_concepts: { type: "ARRAY", items: { type: "STRING" }, description: `Array de ${numCreatives} conceitos distintos em Portugues` }
+            },
+            required: ["design_concepts"]
+          }
+        }
+      };
+
+      const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!responseText) throw new Error("Resposta invalida.");
+      const data = JSON.parse(responseText);
+      setDesignConcepts(data.design_concepts || []);
+
+      await generateCopy(brand.brandAnalysis, brand.palette);
+    } catch (err: any) {
+      console.error(err); setError("Erro ao gerar conceitos. " + err.message); setStep(1);
+    }
+  };
+
   const renderStep1 = () => (
     <div className="space-y-8 animate-fade-in w-full max-w-3xl mx-auto">
+      {savedBrands.length > 0 && (
+        <div className="bg-white p-8 rounded-[2rem] shadow-[0_2px_20px_rgba(0,0,0,0.02)] border border-gray-100">
+          <h3 className="text-xl font-semibold text-[#1d1d1f] mb-2 tracking-tight flex items-center gap-3">
+            <div className="p-2 bg-[#f5f5f7] rounded-xl"><FolderOpen className="w-5 h-5 text-[#1d1d1f]" /></div>
+            Marcas Salvas
+          </h3>
+          <p className="text-sm text-[#86868b] mb-5">Reutilize uma analise de marca anterior -- pula o Agente 1 e gera novos conceitos e copy.</p>
+          <div className="space-y-3">
+            {savedBrands.map(brand => (
+              <div key={brand.id} className="flex items-center justify-between bg-[#f5f5f7] p-4 rounded-2xl group hover:bg-[#e8e8ed] transition-colors">
+                <div className="flex items-center gap-4 flex-1 min-w-0">
+                  <div className="flex gap-1.5 shrink-0">
+                    {brand.palette.slice(0, 4).map((c, i) => (
+                      <div key={i} className="w-5 h-5 rounded-full ring-1 ring-gray-200" style={{ backgroundColor: c }} />
+                    ))}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-[#1d1d1f] truncate">{brand.name}</p>
+                    <p className="text-xs text-[#86868b]">Salvo em {brand.savedAt}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button onClick={() => useSavedBrand(brand)}
+                    className="px-5 py-2 bg-[#0071e3] hover:bg-[#0077ed] text-white text-sm font-semibold rounded-full transition-colors flex items-center gap-1.5">
+                    <Wand2 className="w-4 h-4" /> Usar
+                  </button>
+                  <button onClick={() => deleteBrand(brand.id)} title="Excluir marca"
+                    className="p-2 text-[#86868b] hover:text-red-500 hover:bg-white rounded-full transition-all opacity-0 group-hover:opacity-100">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white p-8 rounded-[2rem] shadow-[0_2px_20px_rgba(0,0,0,0.02)] border border-gray-100">
         <h3 className="text-xl font-semibold text-[#1d1d1f] mb-2 tracking-tight">Configuracao de API e Modelos</h3>
         <p className="text-sm text-[#86868b] mb-5">Insira sua chave do Google AI Studio -- os modelos serao carregados automaticamente.</p>
@@ -733,6 +967,10 @@ Responda APENAS com JSON valido.
             className="flex-1 py-4 bg-[#f5f5f7] hover:bg-[#e8e8ed] text-[#1d1d1f] font-semibold rounded-full flex items-center justify-center gap-2 transition-colors">
             <RefreshCw className="w-5 h-5" /> Gerar Novamente
           </button>
+          <button onClick={() => { setStep(3); }}
+            className="flex-1 py-4 bg-[#0071e3] hover:bg-[#0077ed] text-white font-semibold rounded-full flex items-center justify-center gap-2 transition-all shadow-[0_4px_14px_rgba(0,113,227,0.3)]">
+            <PenTool className="w-5 h-5" /> Editar e Gerar Mais
+          </button>
           <button onClick={() => { setStep(1); setGeneratedImages([]); }}
             className="flex-1 py-4 bg-[#1d1d1f] hover:bg-black text-white font-semibold rounded-full flex items-center justify-center gap-2 transition-all shadow-[0_4px_14px_rgba(0,0,0,0.1)]">
             <Layout className="w-5 h-5" /> Novo Projeto
@@ -745,11 +983,23 @@ Responda APENAS com JSON valido.
   return (
     <div className="min-h-screen bg-[#fbfbfd] text-[#1d1d1f] font-sans selection:bg-[#0071e3] selection:text-white p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
-        <header className="mb-12 text-center pt-8">
-          <h1 className="text-4xl md:text-5xl font-semibold tracking-tighter text-[#1d1d1f] mb-3 flex items-center justify-center gap-3">
-            AdCreative <span className="text-[#0071e3]">Pro</span>
-          </h1>
-          <p className="text-[#86868b] text-lg font-medium tracking-tight">Inteligencia Artificial para criacao publicitaria.</p>
+        <header className="mb-12 pt-8 relative">
+          <div className="absolute right-0 top-8 flex items-center gap-3">
+            <div className="flex items-center gap-2 text-sm text-[#86868b]">
+              <User className="w-4 h-4" />
+              <span className="hidden sm:inline truncate max-w-[200px]">{user?.email}</span>
+            </div>
+            <button onClick={signOut} title="Sair"
+              className="p-2 text-[#86868b] hover:text-red-500 hover:bg-[#f5f5f7] rounded-full transition-all">
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="text-center">
+            <h1 className="text-4xl md:text-5xl font-semibold tracking-tighter text-[#1d1d1f] mb-3 flex items-center justify-center gap-3">
+              AdCreative <span className="text-[#0071e3]">Pro</span>
+            </h1>
+            <p className="text-[#86868b] text-lg font-medium tracking-tight">Inteligencia Artificial para criacao publicitaria.</p>
+          </div>
         </header>
         <div className="flex justify-center mb-16">
           <div className="inline-flex bg-[#f5f5f7] p-1.5 rounded-full border border-gray-100">
