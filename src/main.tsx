@@ -5,6 +5,10 @@ import App from './App.tsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.tsx'
 import LoginPage from './components/LoginPage.tsx'
 import { Loader2 } from 'lucide-react'
+import { runMigrations } from './lib/migrations.ts'
+
+// Roda migrations pendentes no startup
+runMigrations().catch(err => console.error('[Migrations] Erro:', err));
 
 function Root() {
   const { user, loading } = useAuth()

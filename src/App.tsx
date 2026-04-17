@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   UploadCloud, FileText, Image as ImageIcon, Wand2,
   CheckCircle2, Palette, PenTool, Layout, Download,
-  AlertCircle, Loader2, ChevronRight, RefreshCw, X, ImagePlus, Key, Cpu, Info, ExternalLink, BookOpen, Trash2, FolderOpen, LogOut, User
+  AlertCircle, Loader2, ChevronRight, RefreshCw, X, ImagePlus, Key, Cpu, Info, ExternalLink, BookOpen, Trash2, FolderOpen, LogOut, User, Clock, Copy, MessageSquare
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { useAuth } from './contexts/AuthContext';
@@ -52,6 +52,7 @@ export default function App() {
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [customApiKey, setCustomApiKey] = useState("");
+  const [apiKeyLoaded, setApiKeyLoaded] = useState(false);
   const [mdFile, setMdFile] = useState<File | null>(null);
   const [mdContent, setMdContent] = useState("");
   const [logo, setLogo] = useState<string | null>(null);
@@ -79,6 +80,13 @@ export default function App() {
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
   const [savedBrands, setSavedBrands] = useState<SavedBrand[]>([]);
   const [, setBrandsLoading] = useState(true);
+  const [generationMode, setGenerationMode] = useState<"complete" | "creatives_only">("complete");
+  const [captions, setCaptions] = useState<string[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [historyCreatives, setHistoryCreatives] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [copiedCaption, setCopiedCaption] = useState<number | null>(null);
   const mdInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -171,6 +179,37 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [customApiKey, fetchModelsFromApi]);
 
+  // Load saved API key from Supabase
+  useEffect(() => {
+    if (!user) return;
+    const loadApiKey = async () => {
+      const { data } = await supabase
+        .from('user_settings')
+        .select('gemini_api_key')
+        .eq('user_id', user.id)
+        .single();
+      if (data?.gemini_api_key) {
+        setCustomApiKey(data.gemini_api_key);
+      }
+      setApiKeyLoaded(true);
+    };
+    loadApiKey();
+  }, [user]);
+
+  // Auto-save API key to Supabase when it changes (debounced)
+  useEffect(() => {
+    if (!user || !apiKeyLoaded) return;
+    if (!customApiKey || customApiKey.length < 10) return;
+    const timeout = setTimeout(async () => {
+      await supabase.from('user_settings').upsert({
+        user_id: user.id,
+        gemini_api_key: customApiKey,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_id' });
+    }, 1500);
+    return () => clearTimeout(timeout);
+  }, [customApiKey, user, apiKeyLoaded]);
+
   // Load saved brands from Supabase
   useEffect(() => {
     if (!user) return;
@@ -197,6 +236,29 @@ export default function App() {
     };
     loadBrands();
   }, [user]);
+
+  const loadHistory = async () => {
+    if (!user) return;
+    setHistoryLoading(true);
+    try {
+      const { data } = await supabase
+        .from('creatives')
+        .select('*, brands(name)')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+      if (data) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const items = await Promise.all(data.map(async (c: any) => {
+          const { data: urlData } = await supabase.storage.from('creatives').createSignedUrl(c.image_path, 3600);
+          return { ...c, imageUrl: urlData?.signedUrl || '' };
+        }));
+        setHistoryCreatives(items);
+      }
+    } catch (err) {
+      console.error("Erro ao carregar historico:", err);
+    }
+    setHistoryLoading(false);
+  };
 
   // ========================================================================
   // AGENT 1 -- Diretor de Criacao (Analista de Marca + Direcao de Arte)
@@ -485,6 +547,67 @@ Responda APENAS com JSON valido.
       const images = await Promise.all(promises);
       setGeneratedImages(images);
 
+      // Generate Instagram captions if mode is complete
+      let generatedCaptions: string[] = [];
+      if (generationMode === "complete") {
+        setLoadingMsg("Gerando descricoes para Instagram...");
+        try {
+          const captionUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${activeKey}`;
+          const captionSystemPrompt = `
+Voce e um Social Media Manager especialista em Instagram com mais de 10 anos de experiencia em marketing digital.
+
+CONTEXTO:
+- Analise da marca: ${brandAnalysis}
+- Copy do criativo (texto que aparece NA imagem): ${copyText}
+- Formato: ${selectedSize}
+
+TAREFA:
+Gere ${numCreatives} descricao(oes) UNICA(s) para postagem no Instagram, uma para cada variacao de criativo.
+
+DIRETRIZES:
+1. OBRIGATORIAMENTE em Portugues do Brasil (pt-BR).
+2. Comece com um gancho forte que prenda atencao (primeira linha e crucial no Instagram).
+3. Use emojis estrategicamente -- nao exagere, 3-5 por descricao.
+4. Inclua uma CTA (call-to-action) clara no final do texto.
+5. Adicione 5-10 hashtags relevantes separados no final.
+6. Tom de voz 100% alinhado com a personalidade da marca.
+7. Maximo de 2200 caracteres (limite do Instagram).
+8. Cada descricao deve ser DIFERENTE, adaptada ao conceito visual do criativo correspondente.
+9. Use quebras de linha para facilitar a leitura.
+10. NAO repita o texto da copy que ja aparece na imagem -- COMPLEMENTE-o.
+
+Responda APENAS com JSON valido.
+`.trim();
+
+          const captionPayload = {
+            contents: [{ role: "user", parts: [{ text: `Conceitos visuais dos criativos:\n${designConcepts.map((c, i) => `Variacao ${i + 1}: ${c}`).join('\n\n')}` }] }],
+            systemInstruction: { parts: [{ text: captionSystemPrompt }] },
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "OBJECT",
+                properties: {
+                  captions: { type: "ARRAY", items: { type: "STRING" }, description: `Array de ${numCreatives} descricoes para Instagram em Portugues` }
+                },
+                required: ["captions"]
+              }
+            }
+          };
+
+          const captionResult = await fetchWithRetry(captionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(captionPayload) });
+          const captionResponseText = captionResult.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (captionResponseText) {
+            const captionData = JSON.parse(captionResponseText);
+            generatedCaptions = captionData.captions || [];
+            setCaptions(generatedCaptions);
+          }
+        } catch (err) {
+          console.error("Erro ao gerar descricoes:", err);
+        }
+      } else {
+        setCaptions([]);
+      }
+
       // Save creatives to Supabase Storage
       if (user) {
         for (let i = 0; i < images.length; i++) {
@@ -503,6 +626,7 @@ Responda APENAS com JSON valido.
               brand_id: savedBrands[0]?.id || null,
               size: selectedSize,
               copy_text: copyText,
+              caption: generatedCaptions[i] || null,
               design_concept: designConcepts[i] || designConcepts[0] || '',
               image_path: uploaded.path,
             });
@@ -648,7 +772,7 @@ Responda APENAS com JSON valido.
 
       <div className="bg-white p-8 rounded-[2rem] shadow-[0_2px_20px_rgba(0,0,0,0.02)] border border-gray-100">
         <h3 className="text-xl font-semibold text-[#1d1d1f] mb-2 tracking-tight">Configuracao de API e Modelos</h3>
-        <p className="text-sm text-[#86868b] mb-5">Insira sua chave do Google AI Studio -- os modelos serao carregados automaticamente.</p>
+        <p className="text-sm text-[#86868b] mb-5">Insira sua chave do Google AI Studio -- ela sera salva automaticamente na sua conta.</p>
         <div className="relative">
           <Key className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
           <input type="password" placeholder="AIzaSy..." value={customApiKey}
@@ -666,7 +790,7 @@ Responda APENAS com JSON valido.
         </div>
         {keyStatus === "success" && (
           <p className="text-sm text-emerald-600 font-medium mt-3 flex items-center gap-1.5 ml-1">
-            <CheckCircle2 className="w-4 h-4" /> Modelos sincronizados automaticamente!
+            <CheckCircle2 className="w-4 h-4" /> Modelos sincronizados! Chave salva na sua conta.
           </p>
         )}
         {keyStatus === "error" && (
@@ -917,6 +1041,23 @@ Responda APENAS com JSON valido.
         </div>
       </div>
 
+      <div className="bg-white p-8 md:p-10 rounded-[2rem] shadow-[0_4px_24px_rgba(0,0,0,0.04)] border border-gray-100">
+        <h3 className="text-base font-semibold text-[#1d1d1f] flex items-center gap-2 mb-4 tracking-tight">
+          <MessageSquare className="w-5 h-5 text-[#86868b]" /> Modo de Geracao
+        </h3>
+        <p className="text-sm text-[#86868b] mb-5">Escolha se deseja gerar apenas os criativos ou o pacote completo com descricao para Instagram.</p>
+        <div className="flex flex-col sm:flex-row gap-3 p-1.5 bg-[#f5f5f7] rounded-2xl">
+          <button onClick={() => setGenerationMode("complete")}
+            className={`flex-1 py-4 px-6 rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2 ${generationMode === "complete" ? 'bg-white text-[#1d1d1f] shadow-sm' : 'text-[#86868b] hover:text-[#1d1d1f]'}`}>
+            <MessageSquare className="w-4 h-4" /> Completo (Criativo + Descricao)
+          </button>
+          <button onClick={() => setGenerationMode("creatives_only")}
+            className={`flex-1 py-4 px-6 rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2 ${generationMode === "creatives_only" ? 'bg-white text-[#1d1d1f] shadow-sm' : 'text-[#86868b] hover:text-[#1d1d1f]'}`}>
+            <ImageIcon className="w-4 h-4" /> Somente Criativos
+          </button>
+        </div>
+      </div>
+
       <div className="flex flex-col sm:flex-row gap-4 pt-4">
         <button onClick={() => setStep(1)}
           className="px-8 py-4 bg-[#f5f5f7] text-[#1d1d1f] hover:bg-[#e8e8ed] font-semibold rounded-full transition-colors">
@@ -924,7 +1065,7 @@ Responda APENAS com JSON valido.
         </button>
         <button onClick={generateCreative}
           className="flex-1 py-4 bg-[#0071e3] hover:bg-[#0077ed] text-white font-semibold text-lg rounded-full flex items-center justify-center gap-2 transition-all shadow-[0_4px_14px_rgba(0,113,227,0.3)] hover:shadow-[0_6px_20px_rgba(0,113,227,0.4)]">
-          <ImageIcon className="w-5 h-5" /> Gerar {numCreatives} Criativo{numCreatives > 1 ? 's' : ''} Completo{numCreatives > 1 ? 's' : ''}
+          <ImageIcon className="w-5 h-5" /> Gerar {numCreatives} Criativo{numCreatives > 1 ? 's' : ''}
         </button>
       </div>
     </div>
@@ -959,6 +1100,20 @@ Responda APENAS com JSON valido.
                 </div>
               </div>
               <p className="text-center text-sm text-[#86868b] mt-3 font-medium">Variacao {idx + 1}</p>
+              {captions[idx] && (
+                <div className="mt-3 bg-white p-4 rounded-2xl border border-gray-100 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-[#86868b] flex items-center gap-1.5">
+                      <MessageSquare className="w-3.5 h-3.5" /> Descricao Instagram
+                    </p>
+                    <button onClick={() => { navigator.clipboard.writeText(captions[idx]); setCopiedCaption(idx); setTimeout(() => setCopiedCaption(null), 2000); }}
+                      className="text-xs text-[#0071e3] hover:text-[#0057b3] font-medium flex items-center gap-1 transition-colors">
+                      {copiedCaption === idx ? <><CheckCircle2 className="w-3.5 h-3.5" /> Copiado!</> : <><Copy className="w-3.5 h-3.5" /> Copiar</>}
+                    </button>
+                  </div>
+                  <p className="text-sm text-[#1d1d1f] leading-relaxed whitespace-pre-wrap max-h-40 overflow-y-auto">{captions[idx]}</p>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -971,7 +1126,7 @@ Responda APENAS com JSON valido.
             className="flex-1 py-4 bg-[#0071e3] hover:bg-[#0077ed] text-white font-semibold rounded-full flex items-center justify-center gap-2 transition-all shadow-[0_4px_14px_rgba(0,113,227,0.3)]">
             <PenTool className="w-5 h-5" /> Editar e Gerar Mais
           </button>
-          <button onClick={() => { setStep(1); setGeneratedImages([]); }}
+          <button onClick={() => { setStep(1); setGeneratedImages([]); setCaptions([]); }}
             className="flex-1 py-4 bg-[#1d1d1f] hover:bg-black text-white font-semibold rounded-full flex items-center justify-center gap-2 transition-all shadow-[0_4px_14px_rgba(0,0,0,0.1)]">
             <Layout className="w-5 h-5" /> Novo Projeto
           </button>
@@ -980,11 +1135,85 @@ Responda APENAS com JSON valido.
     );
   };
 
+  const renderHistory = () => (
+    <div className="space-y-8 animate-fade-in w-full max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h2 className="text-3xl font-semibold text-[#1d1d1f] tracking-tight mb-2">Historico de Criativos</h2>
+          <p className="text-[#86868b] text-lg">{historyCreatives.length} criativo{historyCreatives.length !== 1 ? 's' : ''} gerado{historyCreatives.length !== 1 ? 's' : ''}.</p>
+        </div>
+        <button onClick={() => setShowHistory(false)}
+          className="px-6 py-3 bg-[#f5f5f7] text-[#1d1d1f] hover:bg-[#e8e8ed] font-semibold rounded-full transition-colors">
+          Voltar
+        </button>
+      </div>
+      {historyLoading ? (
+        <div className="flex flex-col items-center justify-center py-20">
+          <Loader2 className="w-10 h-10 text-[#86868b] animate-spin mb-4" />
+          <p className="text-[#86868b]">Carregando historico...</p>
+        </div>
+      ) : historyCreatives.length === 0 ? (
+        <div className="text-center py-20">
+          <Clock className="w-12 h-12 text-[#86868b] mx-auto mb-4" strokeWidth={1.5} />
+          <p className="text-[#86868b] text-lg">Nenhum criativo gerado ainda.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {historyCreatives.map((item) => (
+            <div key={item.id} className="bg-white rounded-[2rem] overflow-hidden shadow-[0_4px_24px_rgba(0,0,0,0.04)] border border-gray-100">
+              <div className="aspect-square bg-[#f5f5f7] relative group">
+                {item.imageUrl ? (
+                  <img src={item.imageUrl} alt="Criativo" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <ImageIcon className="w-10 h-10 text-[#86868b]" />
+                  </div>
+                )}
+                <div className="absolute inset-0 bg-black/30 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-center justify-center">
+                  <a href={item.imageUrl} target="_blank" rel="noopener noreferrer"
+                    className="px-5 py-2.5 bg-white/90 backdrop-blur-md text-[#1d1d1f] rounded-full font-semibold flex items-center gap-2 shadow-xl hover:scale-105 transition-transform text-sm">
+                    <Download className="w-4 h-4" /> Abrir Imagem
+                  </a>
+                </div>
+              </div>
+              <div className="p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-[#86868b] bg-[#f5f5f7] px-3 py-1 rounded-full">{item.size}</span>
+                  <span className="text-xs text-[#86868b]">{new Date(item.created_at).toLocaleDateString('pt-BR')}</span>
+                </div>
+                {item.brands?.name && (
+                  <p className="text-sm font-semibold text-[#1d1d1f]">{item.brands.name}</p>
+                )}
+                {item.copy_text && (
+                  <p className="text-sm text-[#1d1d1f] line-clamp-2">{item.copy_text}</p>
+                )}
+                {item.caption && (
+                  <div className="pt-2 border-t border-gray-100">
+                    <p className="text-xs font-medium text-[#86868b] mb-1 flex items-center gap-1"><MessageSquare className="w-3 h-3" /> Descricao Instagram</p>
+                    <p className="text-sm text-[#1d1d1f] line-clamp-3 whitespace-pre-wrap">{item.caption}</p>
+                    <button onClick={() => navigator.clipboard.writeText(item.caption)}
+                      className="mt-2 text-xs text-[#0071e3] hover:text-[#0057b3] font-medium flex items-center gap-1 transition-colors">
+                      <Copy className="w-3 h-3" /> Copiar descricao
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-[#fbfbfd] text-[#1d1d1f] font-sans selection:bg-[#0071e3] selection:text-white p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
         <header className="mb-12 pt-8 relative">
           <div className="absolute right-0 top-8 flex items-center gap-3">
+            <button onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadHistory(); }} title="Historico"
+              className={`px-4 py-2 text-sm font-medium rounded-full flex items-center gap-1.5 transition-all ${showHistory ? 'bg-[#1d1d1f] text-white' : 'text-[#86868b] hover:text-[#1d1d1f] hover:bg-[#f5f5f7]'}`}>
+              <Clock className="w-4 h-4" /> <span className="hidden sm:inline">Historico</span>
+            </button>
             <div className="flex items-center gap-2 text-sm text-[#86868b]">
               <User className="w-4 h-4" />
               <span className="hidden sm:inline truncate max-w-[200px]">{user?.email}</span>
@@ -1001,7 +1230,7 @@ Responda APENAS com JSON valido.
             <p className="text-[#86868b] text-lg font-medium tracking-tight">Inteligencia Artificial para criacao publicitaria.</p>
           </div>
         </header>
-        <div className="flex justify-center mb-16">
+        {!showHistory && <div className="flex justify-center mb-16">
           <div className="inline-flex bg-[#f5f5f7] p-1.5 rounded-full border border-gray-100">
             {[{ n: 1, label: "Setup" }, { n: 3, label: "Aprovacao" }, { n: 5, label: "Resultado" }].map((s, i) => (
               <div key={s.n}
@@ -1011,7 +1240,7 @@ Responda APENAS com JSON valido.
               </div>
             ))}
           </div>
-        </div>
+        </div>}
         {error && (
           <div className="max-w-3xl mx-auto mb-8 p-4 bg-red-50/50 border border-red-100 text-red-600 rounded-2xl flex items-center gap-3 animate-fade-in backdrop-blur-xl">
             <AlertCircle className="w-5 h-5 shrink-0" />
@@ -1019,10 +1248,14 @@ Responda APENAS com JSON valido.
           </div>
         )}
         <main className="transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] pb-20">
-          {step === 1 && renderStep1()}
-          {(step === 2 || step === 4) && renderLoading()}
-          {step === 3 && renderStep3()}
-          {step === 5 && renderStep5()}
+          {showHistory ? renderHistory() : (
+            <>
+              {step === 1 && renderStep1()}
+              {(step === 2 || step === 4) && renderLoading()}
+              {step === 3 && renderStep3()}
+              {step === 5 && renderStep5()}
+            </>
+          )}
         </main>
       </div>
     </div>
