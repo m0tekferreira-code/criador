@@ -221,7 +221,8 @@ export default function App() {
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
       if (data) {
-        setSavedBrands(data.map(b => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setSavedBrands(data.map((b: any) => ({
           id: b.id,
           name: b.name,
           savedAt: new Date(b.created_at).toLocaleDateString('pt-BR'),
